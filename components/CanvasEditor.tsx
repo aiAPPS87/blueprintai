@@ -108,7 +108,9 @@ export default function CanvasEditor({
 
     // --- 3. House white base ---
     ctx.fillStyle = '#FFFFFF';
-    ctx.fillRect(ox, oy, planW, planH);
+    ctx.beginPath();
+    buildHousePath(ctx, plan, scale, ox, oy, planW, planH);
+    ctx.fill();
 
     // --- 4. Room color fills ---
     for (const room of plan.rooms) {
@@ -127,7 +129,9 @@ export default function CanvasEditor({
     ctx.strokeStyle = '#111827';
     ctx.lineWidth   = Math.max(3, EXT_WALL * scale * 0.8);
     ctx.setLineDash([]);
-    ctx.strokeRect(ox, oy, planW, planH);
+    ctx.beginPath();
+    buildHousePath(ctx, plan, scale, ox, oy, planW, planH);
+    ctx.stroke();
     ctx.restore();
 
     // --- 8. Window symbols ---
@@ -299,6 +303,26 @@ function drawGrid(ctx: CanvasRenderingContext2D, ox: number, oy: number, planW: 
   ctx.restore();
 }
 
+// ---- L-shape / rectangle house outline path ----
+function buildHousePath(
+  ctx: CanvasRenderingContext2D,
+  plan: FloorPlan, scale: number, ox: number, oy: number, planW: number, planH: number
+) {
+  if (plan.garageWingWidth && plan.garageWingDepth) {
+    const gW = plan.garageWingWidth * scale;
+    const gH = plan.garageWingDepth * scale;
+    ctx.moveTo(ox,       oy);
+    ctx.lineTo(ox + gW,  oy);
+    ctx.lineTo(ox + gW,  oy + gH);
+    ctx.lineTo(ox + planW, oy + gH);
+    ctx.lineTo(ox + planW, oy + planH);
+    ctx.lineTo(ox,       oy + planH);
+  } else {
+    ctx.rect(ox, oy, planW, planH);
+  }
+  ctx.closePath();
+}
+
 // ---- Wall hatching (evenodd clip: house minus rooms) ----
 function drawWallHatch(
   ctx: CanvasRenderingContext2D,
@@ -318,9 +342,9 @@ function drawWallHatch(
   if (!pat) return;
 
   ctx.save();
-  // Clip path = house rect MINUS all room rects (evenodd = holes)
+  // Clip path = house outline MINUS all room rects (evenodd = holes)
   ctx.beginPath();
-  ctx.rect(ox, oy, planW, planH);
+  buildHousePath(ctx, plan, scale, ox, oy, planW, planH);
   for (const r of plan.rooms) {
     ctx.rect(ox + r.x * scale, oy + r.y * scale, r.width * scale, r.height * scale);
   }

@@ -58,7 +58,9 @@ export function renderFloorPlanToCanvas(
 
   // House white base
   ctx.fillStyle = '#FFFFFF';
-  ctx.fillRect(ox, oy, planW, planH);
+  ctx.beginPath();
+  buildHousePath(ctx, plan, PPM, ox, oy, planW, planH);
+  ctx.fill();
 
   // Room fills
   for (const r of plan.rooms) {
@@ -76,7 +78,9 @@ export function renderFloorPlanToCanvas(
   ctx.strokeStyle = '#111827';
   ctx.lineWidth   = Math.max(4, EXT_WALL * PPM * 0.8);
   ctx.setLineDash([]);
-  ctx.strokeRect(ox, oy, planW, planH);
+  ctx.beginPath();
+  buildHousePath(ctx, plan, PPM, ox, oy, planW, planH);
+  ctx.stroke();
 
   // Windows
   drawWindows(ctx, plan, PPM, ox, oy);
@@ -132,6 +136,25 @@ function drawGrid(ctx: CanvasRenderingContext2D, ox: number, oy: number, planW: 
   ctx.setLineDash([]); ctx.restore();
 }
 
+function buildHousePath(
+  ctx: CanvasRenderingContext2D, plan: FloorPlan, ppm: number,
+  ox: number, oy: number, planW: number, planH: number
+) {
+  if (plan.garageWingWidth && plan.garageWingDepth) {
+    const gW = plan.garageWingWidth * ppm;
+    const gH = plan.garageWingDepth * ppm;
+    ctx.moveTo(ox,         oy);
+    ctx.lineTo(ox + gW,    oy);
+    ctx.lineTo(ox + gW,    oy + gH);
+    ctx.lineTo(ox + planW, oy + gH);
+    ctx.lineTo(ox + planW, oy + planH);
+    ctx.lineTo(ox,         oy + planH);
+  } else {
+    ctx.rect(ox, oy, planW, planH);
+  }
+  ctx.closePath();
+}
+
 function drawWallHatch(
   ctx: CanvasRenderingContext2D, plan: FloorPlan, ppm: number,
   ox: number, oy: number, planW: number, planH: number
@@ -147,7 +170,7 @@ function drawWallHatch(
   if (!pat) return;
   ctx.save();
   ctx.beginPath();
-  ctx.rect(ox, oy, planW, planH);
+  buildHousePath(ctx, plan, ppm, ox, oy, planW, planH);
   for (const r of plan.rooms) ctx.rect(ox + r.x * ppm, oy + r.y * ppm, r.width * ppm, r.height * ppm);
   ctx.clip('evenodd');
   ctx.fillStyle = pat;

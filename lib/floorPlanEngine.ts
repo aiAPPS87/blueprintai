@@ -169,6 +169,18 @@ export function generateFloorPlan(spec: HouseSpec): FloorPlan {
     zones[zi] = distribute(zones[zi], houseW);
   }
 
+  // --- Determine L-shape geometry ---
+  // An L-shape forms when Zone 0 (garage) natural width is meaningfully
+  // narrower than the main body. Threshold: < 72% of main body width.
+  const zone0NatW = naturalW(zones[0]);
+  const hasGarage  = zones[0].length > 0 && zH[0] > 0;
+  const isLShape   = hasGarage && zone0NatW < houseW * 0.72;
+
+  // For L-shapes, re-distribute Zone 0 within its own narrower width.
+  if (isLShape) {
+    zones[0] = distribute(zones[0], zone0NatW);
+  }
+
   // --- Place rooms ---
   const rooms: Room[] = [];
   let curY = EXT_WALL;
@@ -178,7 +190,7 @@ export function generateFloorPlan(spec: HouseSpec): FloorPlan {
     if (h === 0) continue;
 
     if (zi === 2) {
-      // Full-width hallway
+      // Full-width hallway (always spans main body width)
       rooms.push({
         id: uuidv4(), type: 'hallway', label: 'Hallway',
         x: EXT_WALL, y: curY, width: houseW, height: h,
@@ -202,7 +214,11 @@ export function generateFloorPlan(spec: HouseSpec): FloorPlan {
   const planW = snap(EXT_WALL + houseW + EXT_WALL);
   const planH = snap(curY - INT_WALL + EXT_WALL);
 
-  const walls = buildWalls(rooms, planW, planH);
+  // L-shape wing outer dimensions
+  const garageWingWidth = isLShape ? snap(EXT_WALL + zone0NatW + EXT_WALL) : undefined;
+  const garageWingDepth = isLShape ? snap(EXT_WALL + zH[0] + INT_WALL)     : undefined;
+
+  const walls = buildWalls(rooms, planW, planH, garageWingWidth, garageWingDepth);
   const totalArea = rooms
     .filter(r => r.type !== 'garage' && r.type !== 'hallway' && r.type !== 'storage')
     .reduce((s, r) => +(s + r.width * r.height).toFixed(2), 0);
@@ -211,6 +227,7 @@ export function generateFloorPlan(spec: HouseSpec): FloorPlan {
     id: uuidv4(), name: 'New Floor Plan',
     totalArea: parseFloat(totalArea.toFixed(1)),
     width: planW, depth: planH,
+    garageWingWidth, garageWingDepth,
     rooms, walls,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -221,16 +238,34 @@ export function generateFloorPlan(spec: HouseSpec): FloorPlan {
 // Wall generation
 // ============================================================
 
-function buildWalls(rooms: Room[], planW: number, planH: number): Wall[] {
+function buildWalls(
+  rooms: Room[], planW: number, planH: number,
+  garageWingWidth?: number, garageWingDepth?: number
+): Wall[] {
   const walls: Wall[] = [];
 
-  // Exterior perimeter
-  for (const c of [
-    { x1: 0, y1: 0,      x2: planW, y2: 0 },
-    { x1: planW, y1: 0,  x2: planW, y2: planH },
-    { x1: planW, y1: planH, x2: 0, y2: planH },
-    { x1: 0, y1: planH,  x2: 0, y2: 0 },
-  ]) walls.push({ id: uuidv4(), ...c, thickness: EXT_WALL, type: 'exterior' });
+  // Exterior perimeter — L-shape or rectangle
+  if (garageWingWidth && garageWingDepth) {
+    const gW = garageWingWidth;
+    const gH = garageWingDepth;
+    // L-shape polygon (clockwise): top-left → top-right of wing → step → main body right → bottom → left
+    const segs = [
+      { x1: 0,   y1: 0,     x2: gW,    y2: 0     },  // top of wing
+      { x1: gW,  y1: 0,     x2: gW,    y2: gH    },  // right side of wing down to step
+      { x1: gW,  y1: gH,    x2: planW, y2: gH    },  // horizontal step
+      { x1: planW, y1: gH,  x2: planW, y2: planH },  // right side of main body
+      { x1: planW, y1: planH, x2: 0,   y2: planH },  // bottom
+      { x1: 0,   y1: planH, x2: 0,     y2: 0     },  // left side
+    ];
+    for (const c of segs) walls.push({ id: uuidv4(), ...c, thickness: EXT_WALL, type: 'exterior' });
+  } else {
+    for (const c of [
+      { x1: 0, y1: 0,         x2: planW, y2: 0     },
+      { x1: planW, y1: 0,     x2: planW, y2: planH },
+      { x1: planW, y1: planH, x2: 0,     y2: planH },
+      { x1: 0, y1: planH,     x2: 0,     y2: 0     },
+    ]) walls.push({ id: uuidv4(), ...c, thickness: EXT_WALL, type: 'exterior' });
+  }
 
   // Interior (room edges, deduplicated)
   const seen = new Set<string>();

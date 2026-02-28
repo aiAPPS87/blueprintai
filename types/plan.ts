@@ -85,12 +85,20 @@ export interface FloorPlan {
   name: string;
   /** Total habitable floor area in m² */
   totalArea: number;
-  /** Overall house width in meters */
+  /** Overall house width in meters (main body) */
   width: number;
   /** Overall house depth in meters */
   depth: number;
   rooms: Room[];
   walls: Wall[];
+  /**
+   * L-shape support: when set, the garage wing is narrower than the main body.
+   * garageWingWidth = outer width of the garage zone (including ext walls)
+   * garageWingDepth = depth from top of plan to the L-step (including ext wall + zone height + int wall gap)
+   * If not set, the house is a simple rectangle.
+   */
+  garageWingWidth?: number;
+  garageWingDepth?: number;
   /** Metadata */
   createdAt?: string;
   updatedAt?: string;
