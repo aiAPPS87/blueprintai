@@ -1,71 +1,30 @@
 // ============================================================
-// Blueprint AI — Constraint-Based Floor Plan Engine
+// Blueprint AI — Zone-Based Floor Plan Layout Engine
 // ============================================================
-// Grid cell size: 500mm = 0.5m
-// All coordinates are in meters.
+// Coordinates: Y increases downward (screen/canvas convention)
+// Zone 0 (top/front): Garage, Entry
+// Zone 1: Living, Kitchen, Dining
+// Zone 2: Hallway (auto-generated, full width)
+// Zone 3: Master Bed + Ensuite, Bathroom(s), Laundry
+// Zone 4 (rear): Bedrooms, Study, Storage
+//
+// Rooms tile perfectly within zones — no overlaps by construction.
+// EXT_WALL = 0.2m border, INT_WALL = 0.1m gap between rooms.
 // ============================================================
 
 import { v4 as uuidv4 } from 'uuid';
-import {
-  FloorPlan,
-  Room,
-  Wall,
-  RoomType,
-  ROOM_COLORS,
-  ROOM_MIN_SIZES,
-} from '@/types/plan';
+import { FloorPlan, Room, Wall, RoomType, ROOM_COLORS, ROOM_MIN_SIZES } from '@/types/plan';
 
-const GRID_CELL = 0.5; // meters per grid cell
-const EXT_WALL = 0.2;  // exterior wall thickness
-const INT_WALL = 0.1;  // interior wall thickness
+export const EXT_WALL = 0.2;
+export const INT_WALL = 0.1;
+const GRID_CELL = 0.5;
 
-// ============================================================
-// Utility helpers
-// ============================================================
-
-function snapToGrid(value: number): number {
-  return Math.round(value / GRID_CELL) * GRID_CELL;
-}
-
-function roomsOverlap(a: Room, b: Room, margin = 0.05): boolean {
-  return (
-    a.x < b.x + b.width - margin &&
-    a.x + a.width > b.x + margin &&
-    a.y < b.y + b.height - margin &&
-    a.y + a.height > b.y + margin
-  );
-}
-
-function roomArea(r: Room): number {
-  return parseFloat((r.width * r.height).toFixed(2));
-}
-
-function clampRoom(room: Room, maxW: number, maxH: number): Room {
-  const r = { ...room };
-  r.x = Math.max(EXT_WALL, Math.min(r.x, maxW - r.width - EXT_WALL));
-  r.y = Math.max(EXT_WALL, Math.min(r.y, maxH - r.height - EXT_WALL));
-  return r;
-}
-
-function roomsAreAdjacent(a: Room, b: Room, tolerance = 0.15): boolean {
-  const horizontallyAligned =
-    a.x < b.x + b.width + tolerance && a.x + a.width > b.x - tolerance;
-  const verticallyAligned =
-    a.y < b.y + b.height + tolerance && a.y + a.height > b.y - tolerance;
-  const touchingHorizontally =
-    Math.abs(a.x + a.width - b.x) < tolerance ||
-    Math.abs(b.x + b.width - a.x) < tolerance;
-  const touchingVertically =
-    Math.abs(a.y + a.height - b.y) < tolerance ||
-    Math.abs(b.y + b.height - a.y) < tolerance;
-  return (
-    (touchingHorizontally && verticallyAligned) ||
-    (touchingVertically && horizontallyAligned)
-  );
+function snap(v: number): number {
+  return Math.round(v / GRID_CELL) * GRID_CELL;
 }
 
 // ============================================================
-// Room specification (input from Claude)
+// Room specification (input from Claude or form)
 // ============================================================
 
 export interface RoomSpec {
@@ -79,7 +38,28 @@ export interface HouseSpec {
   rooms: RoomSpec[];
   targetWidth?: number;
   targetDepth?: number;
-  garageDouble?: boolean;
+}
+
+// Internal sized room before layout
+interface SizedRoom extends RoomSpec {
+  w: number;
+  h: number;
+}
+
+// ============================================================
+// Zone assignment
+// ============================================================
+
+function getZone(type: RoomType): number {
+  switch (type) {
+    case 'garage':                                    return 0;
+    case 'living': case 'kitchen': case 'dining':    return 1;
+    case 'hallway': case 'corridor':                  return 2; // auto-generated
+    case 'master_bedroom': case 'ensuite':
+    case 'bathroom': case 'laundry':                  return 3;
+    case 'bedroom': case 'study': case 'storage':     return 4;
+    default:                                          return 4;
+  }
 }
 
 // ============================================================
@@ -87,182 +67,118 @@ export interface HouseSpec {
 // ============================================================
 
 export function generateFloorPlan(spec: HouseSpec): FloorPlan {
-  const rooms: Room[] = [];
-
   // Resolve sizes for each room
-  const sizedRooms = spec.rooms.map((rs) => {
-    const minSize = ROOM_MIN_SIZES[rs.type] || { width: 3.0, height: 3.0 };
-    const w = snapToGrid(Math.max(rs.width ?? minSize.width, minSize.width));
-    const h = snapToGrid(Math.max(rs.height ?? minSize.height, minSize.height));
-    return { ...rs, width: w, height: h };
+  const sizedRooms: SizedRoom[] = spec.rooms
+    .filter(rs => rs.type !== 'hallway' && rs.type !== 'corridor')
+    .map(rs => {
+      const min = ROOM_MIN_SIZES[rs.type] || { width: 3.0, height: 3.0 };
+      const w = snap(Math.max(rs.width ?? min.width, min.width));
+      const h = snap(Math.max(rs.height ?? min.height, min.height));
+      return { ...rs, w, h };
+    });
+
+  // Distribute rooms into zones 0, 1, 3, 4 (zone 2 = auto hallway)
+  const zones: SizedRoom[][] = [[], [], [], [], []];
+  for (const r of sizedRooms) {
+    zones[getZone(r.type)].push(r);
+  }
+
+  // Helper: total interior width of a zone (sum of room widths + gaps)
+  const zoneInteriorWidth = (zone: SizedRoom[]) =>
+    zone.reduce((sum, r) => sum + r.w, 0) + Math.max(0, zone.length - 1) * INT_WALL;
+
+  // Compute house interior width = max non-empty zone width (min 8m)
+  const activeZoneWidths = zones
+    .filter(z => z.length > 0)
+    .map(zoneInteriorWidth);
+  const rawInteriorW = Math.max(...activeZoneWidths, 8.0);
+  const houseInteriorW = snap(
+    spec.targetWidth ? Math.max(spec.targetWidth - EXT_WALL * 2, rawInteriorW) : rawInteriorW
+  );
+
+  // Zone heights = max room height within zone
+  const needsHallway =
+    zones[3].length > 0 || zones[4].length > 0;
+
+  const zoneHeights: number[] = zones.map((zone, zi) => {
+    if (zi === 2) return needsHallway ? 1.2 : 0; // hallway
+    if (zone.length === 0) return 0;
+    return Math.max(...zone.map(r => r.h));
   });
 
-  // Calculate approximate house footprint
-  const totalArea = sizedRooms.reduce((sum, r) => sum + r.width * r.height, 0);
-  const aspectRatio = 1.4;
-  const rawW = Math.sqrt(totalArea * aspectRatio) * 1.3;
-  const rawH = rawW / aspectRatio;
-
-  const houseW = snapToGrid(
-    Math.max(spec.targetWidth ?? rawW, 8)
-  );
-  const houseH = snapToGrid(
-    Math.max(spec.targetDepth ?? rawH, 7)
-  );
-
-  // --- Phase 1: Place garage at front (bottom of plan = front/south) ---
-  const garageSpec = sizedRooms.find(
-    (r) => r.type === 'garage'
-  );
-  let currentX = EXT_WALL;
+  // ---- Layout rooms ----
+  const rooms: Room[] = [];
   let currentY = EXT_WALL;
 
-  if (garageSpec) {
-    const garage: Room = {
-      id: uuidv4(),
-      type: garageSpec.type,
-      label: garageSpec.label,
-      x: EXT_WALL,
-      y: EXT_WALL,
-      width: garageSpec.width,
-      height: garageSpec.height,
-      color: ROOM_COLORS.garage,
-      connections: [],
-    };
-    rooms.push(garage);
-    currentX = garage.x + garage.width + INT_WALL;
-  }
+  for (let zi = 0; zi < 5; zi++) {
+    const zoneH = zoneHeights[zi];
+    if (zoneH === 0) continue;
 
-  // --- Phase 2: Place living / kitchen / dining area ---
-  const livingTypes: RoomType[] = ['living', 'dining', 'kitchen'];
-  const livingRooms = sizedRooms.filter((r) => livingTypes.includes(r.type));
-
-  let livingStartY = EXT_WALL;
-  let livingMaxX = currentX;
-
-  for (const lr of livingRooms) {
-    const room: Room = {
-      id: uuidv4(),
-      type: lr.type,
-      label: lr.label,
-      x: currentX,
-      y: livingStartY,
-      width: lr.width,
-      height: lr.height,
-      color: ROOM_COLORS[lr.type],
-      connections: [],
-    };
-    rooms.push(room);
-    livingStartY += lr.height + INT_WALL;
-    livingMaxX = Math.max(livingMaxX, currentX + lr.width);
-  }
-
-  // --- Phase 3: Hallway spine ---
-  const hallwaySpec = sizedRooms.find(
-    (r) => r.type === 'hallway' || r.type === 'corridor'
-  );
-  const hallwayX = livingMaxX + INT_WALL;
-  const hallwayW = hallwaySpec?.width ?? 1.2;
-  const hallway: Room = {
-    id: uuidv4(),
-    type: 'hallway',
-    label: 'Hallway',
-    x: hallwayX,
-    y: EXT_WALL,
-    width: hallwayW,
-    height: houseH - EXT_WALL * 2,
-    color: ROOM_COLORS.hallway,
-    connections: [],
-  };
-  rooms.push(hallway);
-
-  // --- Phase 4: Place bedrooms and wet areas off the hallway ---
-  const bedroomTypes: RoomType[] = ['bedroom', 'master_bedroom'];
-  const wetTypes: RoomType[] = ['bathroom', 'ensuite', 'laundry'];
-  const otherTypes: RoomType[] = ['study', 'storage'];
-
-  const bedroomRooms = sizedRooms.filter((r) => bedroomTypes.includes(r.type));
-  const wetRooms = sizedRooms.filter((r) => wetTypes.includes(r.type));
-  const otherRooms = sizedRooms.filter((r) => otherTypes.includes(r.type));
-
-  const remainingRooms = [...bedroomRooms, ...wetRooms, ...otherRooms];
-  const rightStart = hallwayX + hallwayW + INT_WALL;
-
-  // Try to pack rooms into two columns off the hallway
-  let col1Y = EXT_WALL;
-  let col2Y = EXT_WALL;
-  const col1X = rightStart;
-  const col2X = rightStart + (sizedRooms[0]?.width ?? 3.5) + INT_WALL;
-
-  for (let i = 0; i < remainingRooms.length; i++) {
-    const rs = remainingRooms[i];
-    const useCol2 = col1Y > col2Y && col2X < houseW - rs.width - EXT_WALL;
-    const x = useCol2 ? col2X : col1X;
-    const y = useCol2 ? col2Y : col1Y;
-
-    const room: Room = {
-      id: uuidv4(),
-      type: rs.type,
-      label: rs.label,
-      x,
-      y,
-      width: rs.width,
-      height: rs.height,
-      color: ROOM_COLORS[rs.type],
-      connections: [hallway.id],
-    };
-
-    // Collision detection & shifting
-    const placed = placeRoomWithoutCollision(room, rooms, houseW, houseH);
-    rooms.push(placed);
-
-    if (useCol2) {
-      col2Y += placed.height + INT_WALL;
+    if (zi === 2) {
+      // Auto hallway — spans full interior width
+      rooms.push({
+        id: uuidv4(),
+        type: 'hallway',
+        label: 'Hallway',
+        x: EXT_WALL,
+        y: currentY,
+        width: houseInteriorW,
+        height: zoneH,
+        color: ROOM_COLORS.hallway,
+        connections: [],
+      });
     } else {
-      col1Y += placed.height + INT_WALL;
-    }
-  }
+      const zone = zones[zi];
+      const totalW = zoneInteriorWidth(zone);
+      const extra = snap(houseInteriorW - totalW); // space to distribute
 
-  // --- Phase 5: Connect rooms logically ---
-  const hallwayRoom = rooms.find((r) => r.type === 'hallway');
-  if (hallwayRoom) {
-    rooms.forEach((r) => {
-      if (r.id !== hallwayRoom.id && !r.connections.includes(hallwayRoom.id)) {
-        if (roomsAreAdjacent(r, hallwayRoom)) {
-          r.connections.push(hallwayRoom.id);
-        }
+      let currentX = EXT_WALL;
+      for (let ri = 0; ri < zone.length; ri++) {
+        const rs = zone[ri];
+        const isLast = ri === zone.length - 1;
+        // Give all extra width to the last room in the zone
+        const w = isLast && extra > 0 ? snap(rs.w + extra) : rs.w;
+
+        rooms.push({
+          id: uuidv4(),
+          type: rs.type,
+          label: rs.label,
+          x: currentX,
+          y: currentY,
+          width: w,
+          height: zoneH,
+          color: ROOM_COLORS[rs.type] || '#F5F5F5',
+          connections: [],
+        });
+
+        currentX += w + INT_WALL;
       }
-    });
+
+      // If zone is empty but house needs a zone placeholder, skip
+    }
+
+    currentY += zoneH + INT_WALL;
   }
 
-  // --- Phase 6: Clamp all rooms within house boundary ---
-  const clampedRooms = rooms.map((r) => clampRoom(r, houseW, houseH));
+  // Remove trailing INT_WALL gap and add EXT_WALL
+  const houseW = snap(EXT_WALL + houseInteriorW + EXT_WALL);
+  const houseH = snap(currentY - INT_WALL + EXT_WALL);
 
-  // --- Phase 7: Expand house to fit all rooms ---
-  let maxRoomX = 0;
-  let maxRoomY = 0;
-  for (const r of clampedRooms) {
-    maxRoomX = Math.max(maxRoomX, r.x + r.width);
-    maxRoomY = Math.max(maxRoomY, r.y + r.height);
-  }
-  const finalW = snapToGrid(maxRoomX + EXT_WALL);
-  const finalH = snapToGrid(maxRoomY + EXT_WALL);
+  // ---- Generate walls ----
+  const walls = generateWalls(rooms, houseW, houseH);
 
-  // --- Phase 8: Generate walls ---
-  const walls = generateWalls(clampedRooms, finalW, finalH);
-
-  // --- Phase 9: Calculate total area ---
-  const totalHabArea = clampedRooms
-    .filter((r) => r.type !== 'garage' && r.type !== 'hallway')
-    .reduce((sum, r) => sum + roomArea(r), 0);
+  // ---- Calculate total habitable area ----
+  const totalArea = rooms
+    .filter(r => r.type !== 'garage' && r.type !== 'hallway')
+    .reduce((sum, r) => +(sum + r.width * r.height).toFixed(2), 0);
 
   return {
     id: uuidv4(),
     name: 'New Floor Plan',
-    totalArea: parseFloat(totalHabArea.toFixed(1)),
-    width: finalW,
-    depth: finalH,
-    rooms: clampedRooms,
+    totalArea: parseFloat(totalArea.toFixed(1)),
+    width: houseW,
+    depth: houseH,
+    rooms,
     walls,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -270,97 +186,46 @@ export function generateFloorPlan(spec: HouseSpec): FloorPlan {
 }
 
 // ============================================================
-// Collision resolution
-// ============================================================
-
-function placeRoomWithoutCollision(
-  room: Room,
-  existing: Room[],
-  maxW: number,
-  maxH: number,
-  maxAttempts = 50
-): Room {
-  let candidate = { ...room };
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const collision = existing.find((r) => roomsOverlap(candidate, r));
-    if (!collision) return candidate;
-
-    // Try shifting right then up
-    if (candidate.x + candidate.width + INT_WALL + collision.width < maxW - EXT_WALL) {
-      candidate = { ...candidate, x: collision.x + collision.width + INT_WALL };
-    } else {
-      candidate = { ...candidate, x: room.x, y: collision.y + collision.height + INT_WALL };
-    }
-    candidate = clampRoom(candidate, maxW, maxH);
-  }
-
-  // Fallback: stack below existing rooms
-  const maxY = existing.reduce((m, r) => Math.max(m, r.y + r.height), 0);
-  return clampRoom({ ...candidate, x: EXT_WALL, y: maxY + INT_WALL }, maxW, maxH + room.height + INT_WALL);
-}
-
-// ============================================================
-// Wall generation
+// Wall generation (perimeter + interior per room edge)
 // ============================================================
 
 function generateWalls(rooms: Room[], houseW: number, houseH: number): Wall[] {
   const walls: Wall[] = [];
 
   // Exterior perimeter walls
-  const exteriorCoords = [
-    { x1: 0, y1: 0, x2: houseW, y2: 0 },          // South
-    { x1: houseW, y1: 0, x2: houseW, y2: houseH }, // East
-    { x1: houseW, y1: houseH, x2: 0, y2: houseH }, // North
-    { x1: 0, y1: houseH, x2: 0, y2: 0 },           // West
+  const extCoords = [
+    { x1: 0, y1: 0,      x2: houseW, y2: 0 },
+    { x1: houseW, y1: 0, x2: houseW, y2: houseH },
+    { x1: houseW, y1: houseH, x2: 0, y2: houseH },
+    { x1: 0, y1: houseH, x2: 0, y2: 0 },
   ];
-
-  for (const coords of exteriorCoords) {
-    walls.push({
-      id: uuidv4(),
-      ...coords,
-      thickness: EXT_WALL,
-      type: 'exterior',
-    });
+  for (const c of extCoords) {
+    walls.push({ id: uuidv4(), ...c, thickness: EXT_WALL, type: 'exterior' });
   }
 
-  // Interior walls — generate from room edges
-  for (const room of rooms) {
-    const { x, y, width, height } = room;
-    const roomWalls = [
-      { x1: x, y1: y, x2: x + width, y2: y },          // Bottom
-      { x1: x + width, y1: y, x2: x + width, y2: y + height }, // Right
-      { x1: x + width, y1: y + height, x2: x, y2: y + height }, // Top
-      { x1: x, y1: y + height, x2: x, y2: y },          // Left
+  // Interior walls from room edges (deduplicated)
+  const seen = new Set<string>();
+  for (const r of rooms) {
+    const edges = [
+      { x1: r.x, y1: r.y,           x2: r.x + r.width, y2: r.y },
+      { x1: r.x + r.width, y1: r.y, x2: r.x + r.width, y2: r.y + r.height },
+      { x1: r.x, y1: r.y + r.height, x2: r.x + r.width, y2: r.y + r.height },
+      { x1: r.x, y1: r.y,            x2: r.x, y2: r.y + r.height },
     ];
+    for (const e of edges) {
+      const onExt =
+        (Math.abs(e.x1) < 0.05 && Math.abs(e.x2) < 0.05) ||
+        (Math.abs(e.y1) < 0.05 && Math.abs(e.y2) < 0.05) ||
+        (Math.abs(e.x1 - houseW) < 0.05 && Math.abs(e.x2 - houseW) < 0.05) ||
+        (Math.abs(e.y1 - houseH) < 0.05 && Math.abs(e.y2 - houseH) < 0.05);
+      if (onExt) continue;
 
-    for (const w of roomWalls) {
-      // Skip if it duplicates an exterior wall
-      const isExterior =
-        (Math.abs(w.x1) < 0.01 && Math.abs(w.x2) < 0.01) ||
-        (Math.abs(w.y1) < 0.01 && Math.abs(w.y2) < 0.01) ||
-        (Math.abs(w.x1 - houseW) < 0.01 && Math.abs(w.x2 - houseW) < 0.01) ||
-        (Math.abs(w.y1 - houseH) < 0.01 && Math.abs(w.y2 - houseH) < 0.01);
+      const key = `${Math.round(e.x1*100)},${Math.round(e.y1*100)},${Math.round(e.x2*100)},${Math.round(e.y2*100)}`;
+      const keyRev = `${Math.round(e.x2*100)},${Math.round(e.y2*100)},${Math.round(e.x1*100)},${Math.round(e.y1*100)}`;
+      if (seen.has(key) || seen.has(keyRev)) continue;
+      seen.add(key);
 
-      if (!isExterior) {
-        // Deduplicate very similar interior walls
-        const duplicate = walls.some(
-          (ew) =>
-            ew.type === 'interior' &&
-            Math.abs(ew.x1 - w.x1) < 0.05 &&
-            Math.abs(ew.y1 - w.y1) < 0.05 &&
-            Math.abs(ew.x2 - w.x2) < 0.05 &&
-            Math.abs(ew.y2 - w.y2) < 0.05
-        );
-        if (!duplicate) {
-          walls.push({
-            id: uuidv4(),
-            ...w,
-            thickness: INT_WALL,
-            type: 'interior',
-          });
-        }
-      }
+      walls.push({ id: uuidv4(), ...e, thickness: INT_WALL, type: 'interior' });
     }
   }
 
@@ -368,132 +233,56 @@ function generateWalls(rooms: Room[], houseW: number, houseH: number): Wall[] {
 }
 
 // ============================================================
-// Modify / refine plan utilities
+// Modify / refine plan utilities (kept for drag interactions)
 // ============================================================
 
-export function resizeRoom(
-  plan: FloorPlan,
-  roomId: string,
-  newWidth: number,
-  newHeight: number
-): FloorPlan {
-  const rooms = plan.rooms.map((r) => {
+function roomArea(r: Room) { return parseFloat((r.width * r.height).toFixed(2)); }
+
+export function resizeRoom(plan: FloorPlan, roomId: string, newWidth: number, newHeight: number): FloorPlan {
+  const rooms = plan.rooms.map(r => {
     if (r.id !== roomId) return r;
-    const minSize = ROOM_MIN_SIZES[r.type] || { width: 1.0, height: 1.0 };
-    return {
-      ...r,
-      width: snapToGrid(Math.max(newWidth, minSize.width)),
-      height: snapToGrid(Math.max(newHeight, minSize.height)),
-    };
+    const min = ROOM_MIN_SIZES[r.type] || { width: 1.0, height: 1.0 };
+    return { ...r, width: snap(Math.max(newWidth, min.width)), height: snap(Math.max(newHeight, min.height)) };
   });
-
-  const walls = generateWalls(rooms, plan.width, plan.depth);
-  const totalArea = rooms
-    .filter((r) => r.type !== 'garage' && r.type !== 'hallway')
-    .reduce((sum, r) => sum + roomArea(r), 0);
-
-  return {
-    ...plan,
-    rooms,
-    walls,
-    totalArea: parseFloat(totalArea.toFixed(1)),
-    updatedAt: new Date().toISOString(),
-  };
+  return { ...plan, rooms, walls: generateWalls(rooms, plan.width, plan.depth), updatedAt: new Date().toISOString() };
 }
 
-export function moveRoom(
-  plan: FloorPlan,
-  roomId: string,
-  newX: number,
-  newY: number
-): FloorPlan {
-  const rooms = plan.rooms.map((r) => {
+export function moveRoom(plan: FloorPlan, roomId: string, newX: number, newY: number): FloorPlan {
+  const rooms = plan.rooms.map(r => {
     if (r.id !== roomId) return r;
-    return {
-      ...r,
-      x: snapToGrid(Math.max(EXT_WALL, newX)),
-      y: snapToGrid(Math.max(EXT_WALL, newY)),
-    };
+    return { ...r, x: snap(Math.max(EXT_WALL, newX)), y: snap(Math.max(EXT_WALL, newY)) };
   });
-
-  const walls = generateWalls(rooms, plan.width, plan.depth);
-  return {
-    ...plan,
-    rooms,
-    walls,
-    updatedAt: new Date().toISOString(),
-  };
+  return { ...plan, rooms, walls: generateWalls(rooms, plan.width, plan.depth), updatedAt: new Date().toISOString() };
 }
 
 export function addRoom(plan: FloorPlan, spec: RoomSpec): FloorPlan {
-  const minSize = ROOM_MIN_SIZES[spec.type] || { width: 3.0, height: 3.0 };
-  const w = snapToGrid(Math.max(spec.width ?? minSize.width, minSize.width));
-  const h = snapToGrid(Math.max(spec.height ?? minSize.height, minSize.height));
-
+  const min = ROOM_MIN_SIZES[spec.type] || { width: 3.0, height: 3.0 };
+  const w = snap(Math.max(spec.width ?? min.width, min.width));
+  const h = snap(Math.max(spec.height ?? min.height, min.height));
+  const maxY = plan.rooms.reduce((m, r) => Math.max(m, r.y + r.height), 0) + INT_WALL;
   const newRoom: Room = {
-    id: uuidv4(),
-    type: spec.type,
-    label: spec.label,
-    x: EXT_WALL,
-    y: EXT_WALL,
-    width: w,
-    height: h,
-    color: ROOM_COLORS[spec.type],
-    connections: [],
+    id: uuidv4(), type: spec.type, label: spec.label,
+    x: EXT_WALL, y: maxY, width: w, height: h,
+    color: ROOM_COLORS[spec.type], connections: [],
   };
-
-  const placed = placeRoomWithoutCollision(newRoom, plan.rooms, plan.width + w + 5, plan.depth + h + 5);
-  const newRooms = [...plan.rooms, placed];
-
-  // Expand house if needed
-  const maxX = newRooms.reduce((m, r) => Math.max(m, r.x + r.width), 0) + EXT_WALL;
-  const maxY = newRooms.reduce((m, r) => Math.max(m, r.y + r.height), 0) + EXT_WALL;
-  const newW = snapToGrid(Math.max(plan.width, maxX));
-  const newH = snapToGrid(Math.max(plan.depth, maxY));
-
-  const walls = generateWalls(newRooms, newW, newH);
-  const totalArea = newRooms
-    .filter((r) => r.type !== 'garage' && r.type !== 'hallway')
-    .reduce((sum, r) => sum + roomArea(r), 0);
-
+  const newRooms = [...plan.rooms, newRoom];
+  const newW = snap(Math.max(plan.width, EXT_WALL + w + EXT_WALL));
+  const newH = snap(maxY + h + EXT_WALL);
   return {
-    ...plan,
-    rooms: newRooms,
-    walls,
-    width: newW,
-    depth: newH,
-    totalArea: parseFloat(totalArea.toFixed(1)),
-    updatedAt: new Date().toISOString(),
+    ...plan, rooms: newRooms, walls: generateWalls(newRooms, newW, newH),
+    width: newW, depth: newH, updatedAt: new Date().toISOString(),
   };
 }
 
 export function removeRoom(plan: FloorPlan, roomId: string): FloorPlan {
-  const newRooms = plan.rooms.filter((r) => r.id !== roomId);
-  const walls = generateWalls(newRooms, plan.width, plan.depth);
-  const totalArea = newRooms
-    .filter((r) => r.type !== 'garage' && r.type !== 'hallway')
-    .reduce((sum, r) => sum + roomArea(r), 0);
-
-  return {
-    ...plan,
-    rooms: newRooms,
-    walls,
-    totalArea: parseFloat(totalArea.toFixed(1)),
-    updatedAt: new Date().toISOString(),
-  };
+  const rooms = plan.rooms.filter(r => r.id !== roomId);
+  return { ...plan, rooms, walls: generateWalls(rooms, plan.width, plan.depth), updatedAt: new Date().toISOString() };
 }
 
-// Re-generate walls for a plan (used after AI modification)
 export function recalculateWalls(plan: FloorPlan): FloorPlan {
   const walls = generateWalls(plan.rooms, plan.width, plan.depth);
   const totalArea = plan.rooms
-    .filter((r) => r.type !== 'garage' && r.type !== 'hallway')
+    .filter(r => r.type !== 'garage' && r.type !== 'hallway')
     .reduce((sum, r) => sum + roomArea(r), 0);
-
-  return {
-    ...plan,
-    walls,
-    totalArea: parseFloat(totalArea.toFixed(1)),
-    updatedAt: new Date().toISOString(),
-  };
+  return { ...plan, walls, totalArea: parseFloat(totalArea.toFixed(1)), updatedAt: new Date().toISOString() };
 }

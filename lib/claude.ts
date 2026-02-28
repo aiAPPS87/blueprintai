@@ -1,90 +1,74 @@
 // ============================================================
 // Blueprint AI — Claude API Integration
+// Claude determines room specs (type, size).
+// Our layout engine determines room positions.
 // ============================================================
 
 import Anthropic from '@anthropic-ai/sdk';
-import { FloorPlan, ChatMessage, RoomType, ROOM_COLORS, ROOM_MIN_SIZES } from '@/types/plan';
-import { recalculateWalls } from '@/lib/floorPlanEngine';
+import { FloorPlan, ChatMessage, RoomType, ROOM_COLORS } from '@/types/plan';
+import { generateFloorPlan, recalculateWalls, RoomSpec } from '@/lib/floorPlanEngine';
 import { v4 as uuidv4 } from 'uuid';
 
-const client = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // ============================================================
-// System prompts
+// Claude system prompts
 // ============================================================
 
-const GENERATE_SYSTEM_PROMPT = `You are a floor plan layout engine for Blueprint AI.
-The user describes a house and you return a complete, valid JSON floor plan.
+const GENERATE_SYSTEM_PROMPT = `You are a residential architect assistant for Blueprint AI.
+The user describes a house. Return a JSON list of rooms with ONLY types and sizes — NO coordinates.
+Our layout engine will handle positioning.
 
-IMPORTANT RULES:
-1. Return ONLY valid JSON — no markdown, no explanation, no code blocks
-2. All coordinates (x, y) are in meters from bottom-left origin (0,0)
-3. Minimum room sizes must be respected:
-   - bedroom: 3.0 x 3.0m
-   - master_bedroom: 4.0 x 3.5m
-   - bathroom: 1.8 x 2.4m
-   - ensuite: 1.5 x 2.0m
-   - kitchen: 3.0 x 3.5m
-   - living: 4.0 x 4.0m
-   - dining: 3.0 x 3.5m
-   - garage (single): 3.0 x 5.5m, (double): 5.5 x 5.5m
-   - laundry: 1.8 x 2.0m
-   - hallway: 1.2m wide minimum
-4. Rooms MUST NOT overlap — check all coordinates carefully
-5. Place garage at front (low y values), bedrooms at rear
-6. Group living/kitchen/dining together
-7. Include a hallway connecting rooms
-8. Bathrooms should be near bedrooms (shared plumbing walls)
-9. totalArea is the sum of all room areas except garage/hallway
-10. Use these room types only: bedroom, master_bedroom, bathroom, ensuite, kitchen, living, dining, garage, laundry, hallway, corridor, study, storage
-11. Colors by type:
-    bedroom: "#E8F4FD", master_bedroom: "#DBEAFE", bathroom: "#E0F4F1", ensuite: "#CCFBF1"
-    kitchen: "#FEF3E2", living: "#E8F5E9", dining: "#FFFDE7", garage: "#F5F5F5"
-    laundry: "#F3E5F5", hallway: "#FAFAFA", corridor: "#FAFAFA", study: "#FFF8F0", storage: "#EEEEEE"
+ROOM TYPES: bedroom, master_bedroom, bathroom, ensuite, kitchen, living, dining, garage, laundry, hallway, study, storage
+
+MINIMUM SIZES (width x height in meters):
+- bedroom: 3.0 x 3.0
+- master_bedroom: 4.0 x 3.5
+- bathroom: 1.8 x 2.4
+- ensuite: 1.5 x 2.0
+- kitchen: 3.0 x 3.5
+- living: 4.5 x 4.0
+- dining: 3.0 x 3.5
+- garage single: 3.0 x 5.5
+- garage double: 5.5 x 5.5
+- laundry: 1.8 x 2.0
+- study: 2.5 x 2.5
+
+RULES:
+1. Return ONLY valid JSON — no markdown, no explanation
+2. Do NOT include x, y coordinates — positions are auto-calculated
+3. Do NOT include hallway — it is auto-generated
+4. Size "width" = left-right, "height" = front-back depth of room
+5. Respect minimum sizes. Use larger sizes for generous/standard requests.
 
 Return this exact JSON structure:
 {
-  "id": "uuid-here",
-  "name": "House Plan",
-  "totalArea": 0,
-  "width": 0,
-  "depth": 0,
+  "name": "House Plan Name",
   "rooms": [
-    {
-      "id": "uuid-here",
-      "type": "roomType",
-      "label": "Room Label",
-      "x": 0,
-      "y": 0,
-      "width": 0,
-      "height": 0,
-      "color": "#hexcode",
-      "connections": ["other-room-id"]
-    }
-  ],
-  "walls": []
-}
+    { "type": "garage", "label": "Double Garage", "width": 5.5, "height": 5.5 },
+    { "type": "living", "label": "Living Room", "width": 4.5, "height": 4.0 },
+    { "type": "kitchen", "label": "Kitchen", "width": 3.5, "height": 3.5 },
+    { "type": "dining", "label": "Dining Room", "width": 3.5, "height": 3.5 },
+    { "type": "master_bedroom", "label": "Master Bedroom", "width": 4.0, "height": 3.5 },
+    { "type": "ensuite", "label": "Ensuite", "width": 2.0, "height": 2.5 },
+    { "type": "bathroom", "label": "Bathroom", "width": 2.0, "height": 2.5 },
+    { "type": "bedroom", "label": "Bedroom 2", "width": 3.0, "height": 3.0 }
+  ]
+}`;
 
-Note: Return empty walls array — walls will be auto-generated from room positions.`;
+const REFINE_SYSTEM_PROMPT = `You are a residential architect assistant for Blueprint AI.
+You receive the current room list and an instruction to modify it.
+Return ONLY the updated room list JSON — no coordinates, no hallways.
 
-const REFINE_SYSTEM_PROMPT = `You are a floor plan editor for Blueprint AI.
-The user wants to modify an existing floor plan. You receive the current plan JSON and an instruction.
+Same rules as generation:
+1. Return ONLY valid JSON
+2. No x, y coordinates
+3. No hallway rooms
+4. Respect minimum sizes
+5. Return the COMPLETE updated room list
 
-IMPORTANT RULES:
-1. Return ONLY the updated plan JSON — no markdown, no explanation, no code blocks
-2. Modify ONLY what the user asked to change
-3. Maintain room connectivity — all rooms must still be reachable
-4. Rooms MUST NOT overlap after modification
-5. Respect minimum room sizes (same as generation rules)
-6. Keep all room IDs stable unless adding new rooms
-7. New rooms get new UUIDs; removed rooms are omitted
-8. Return the complete updated plan JSON (all rooms, not just changed ones)
-9. Update totalArea, width, depth if rooms change
-10. Return empty walls array — walls will be auto-generated
-
-Keep x, y coordinates as numbers in meters. Do not use strings for coordinates.`;
+Return same JSON structure:
+{ "name": "...", "rooms": [ { "type": "...", "label": "...", "width": 0, "height": 0 }, ... ] }`;
 
 // ============================================================
 // Generate floor plan from natural language
@@ -95,59 +79,21 @@ export async function generateFloorPlanFromText(
 ): Promise<{ plan: FloorPlan; message: string }> {
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 4096,
+    max_tokens: 2048,
     system: GENERATE_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: 'user',
-        content: `Generate a floor plan for: ${userInput}`,
-      },
-    ],
+    messages: [{ role: 'user', content: `Design a house: ${userInput}` }],
   });
 
   const content = response.content[0];
-  if (content.type !== 'text') {
-    throw new Error('Unexpected response type from Claude');
-  }
+  if (content.type !== 'text') throw new Error('Unexpected response type from Claude');
 
-  let rawJson = content.text.trim();
-
-  // Strip markdown code blocks if Claude ignores instructions
-  rawJson = rawJson
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/\s*```$/i, '')
-    .trim();
-
-  let plan: FloorPlan;
-  try {
-    plan = JSON.parse(rawJson);
-  } catch (e) {
-    // Attempt to extract JSON object from response
-    const match = rawJson.match(/\{[\s\S]*\}/);
-    if (match) {
-      plan = JSON.parse(match[0]);
-    } else {
-      throw new Error(`Failed to parse floor plan JSON: ${rawJson.slice(0, 200)}`);
-    }
-  }
-
-  // Ensure required fields
-  if (!plan.id) plan.id = uuidv4();
-  plan.rooms = (plan.rooms || []).map((r) => ({
-    ...r,
-    id: r.id || uuidv4(),
-    color: r.color || ROOM_COLORS[r.type as RoomType] || '#F5F5F5',
-    connections: r.connections || [],
-  }));
-
-  // Auto-generate walls
-  plan = recalculateWalls(plan);
+  const spec = parseRoomSpec(content.text);
+  const plan = generateFloorPlan({ rooms: spec.rooms });
+  plan.name = spec.name || 'New Floor Plan';
   plan.createdAt = new Date().toISOString();
   plan.updatedAt = new Date().toISOString();
 
-  const message = buildGenerateMessage(plan, userInput);
-  return { plan, message };
+  return { plan, message: buildGenerateMessage(plan, userInput) };
 }
 
 // ============================================================
@@ -159,71 +105,77 @@ export async function refinePlan(
   userInstruction: string,
   history: ChatMessage[]
 ): Promise<{ plan: FloorPlan; message: string }> {
-  // Build conversation messages (last 6 to keep context manageable)
-  const recentHistory = history.slice(-6);
-  const messages: Anthropic.MessageParam[] = [];
+  // Summarize current rooms (no coordinates needed)
+  const currentRoomList = currentPlan.rooms
+    .filter(r => r.type !== 'hallway' && r.type !== 'corridor')
+    .map(r => ({ type: r.type, label: r.label, width: r.width, height: r.height }));
 
+  const messages: Anthropic.MessageParam[] = [];
+  const recentHistory = history.slice(-4);
   for (const msg of recentHistory) {
     if (msg.role === 'user' || msg.role === 'assistant') {
-      messages.push({
-        role: msg.role as 'user' | 'assistant',
-        content: msg.content,
-      });
+      messages.push({ role: msg.role as 'user' | 'assistant', content: msg.content });
     }
   }
-
-  // Add current instruction with plan context
   messages.push({
     role: 'user',
-    content: `Current floor plan JSON:\n${JSON.stringify(currentPlan, null, 2)}\n\nUser instruction: ${userInstruction}`,
+    content: `Current rooms:\n${JSON.stringify(currentRoomList, null, 2)}\n\nInstruction: ${userInstruction}`,
   });
 
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 4096,
+    max_tokens: 2048,
     system: REFINE_SYSTEM_PROMPT,
     messages,
   });
 
   const content = response.content[0];
-  if (content.type !== 'text') {
-    throw new Error('Unexpected response type from Claude');
-  }
+  if (content.type !== 'text') throw new Error('Unexpected response type from Claude');
 
-  let rawJson = content.text.trim();
-  rawJson = rawJson
+  const spec = parseRoomSpec(content.text);
+  const updatedPlan = generateFloorPlan({ rooms: spec.rooms });
+  updatedPlan.id = currentPlan.id; // preserve original ID
+  updatedPlan.name = spec.name || currentPlan.name;
+  updatedPlan.updatedAt = new Date().toISOString();
+
+  return { plan: updatedPlan, message: buildRefineMessage(updatedPlan, currentPlan, userInstruction) };
+}
+
+// ============================================================
+// Parse Claude's room spec response
+// ============================================================
+
+function parseRoomSpec(text: string): { name: string; rooms: RoomSpec[] } {
+  let raw = text.trim()
     .replace(/^```json\s*/i, '')
     .replace(/^```\s*/i, '')
     .replace(/\s*```$/i, '')
     .trim();
 
-  let updatedPlan: FloorPlan;
+  let parsed: { name?: string; rooms?: RoomSpec[] };
   try {
-    updatedPlan = JSON.parse(rawJson);
-  } catch (e) {
-    const match = rawJson.match(/\{[\s\S]*\}/);
+    parsed = JSON.parse(raw);
+  } catch {
+    const match = raw.match(/\{[\s\S]*\}/);
     if (match) {
-      updatedPlan = JSON.parse(match[0]);
+      parsed = JSON.parse(match[0]);
     } else {
-      throw new Error(`Failed to parse refined plan JSON: ${rawJson.slice(0, 200)}`);
+      throw new Error(`Failed to parse room spec JSON: ${raw.slice(0, 200)}`);
     }
   }
 
-  // Preserve original ID
-  updatedPlan.id = currentPlan.id;
-  updatedPlan.rooms = (updatedPlan.rooms || []).map((r) => ({
-    ...r,
-    id: r.id || uuidv4(),
-    color: r.color || ROOM_COLORS[r.type as RoomType] || '#F5F5F5',
-    connections: r.connections || [],
+  const rooms: RoomSpec[] = (parsed.rooms || []).map(r => ({
+    type: (r.type || 'bedroom') as RoomType,
+    label: r.label || capitalize(r.type || 'Room'),
+    width: typeof r.width === 'number' ? r.width : undefined,
+    height: typeof r.height === 'number' ? r.height : undefined,
   }));
 
-  // Auto-generate walls
-  updatedPlan = recalculateWalls(updatedPlan);
-  updatedPlan.updatedAt = new Date().toISOString();
+  return { name: parsed.name || 'New Floor Plan', rooms };
+}
 
-  const message = buildRefineMessage(updatedPlan, currentPlan, userInstruction);
-  return { plan: updatedPlan, message };
+function capitalize(s: string) {
+  return s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
 // ============================================================
@@ -232,34 +184,19 @@ export async function refinePlan(
 
 function buildGenerateMessage(plan: FloorPlan, input: string): string {
   const roomList = plan.rooms
-    .filter((r) => r.type !== 'hallway' && r.type !== 'corridor')
-    .map((r) => `• ${r.label} — ${r.width}×${r.height}m`)
+    .filter(r => r.type !== 'hallway' && r.type !== 'corridor')
+    .map(r => `• ${r.label} — ${r.width.toFixed(1)} × ${r.height.toFixed(1)}m`)
     .join('\n');
 
-  return `I've generated a floor plan based on your description.\n\n**Plan Summary:**\n${roomList}\n\n**Total Area:** ~${plan.totalArea}m²\n**Footprint:** ${plan.width}m × ${plan.depth}m\n\nYou can click any room to select it, drag to move it, or type refinements below.`;
+  return `Floor plan generated.\n\n**Rooms:**\n${roomList}\n\n**Total Area:** ~${plan.totalArea}m²\n**Footprint:** ${plan.width.toFixed(1)}m × ${plan.depth.toFixed(1)}m`;
 }
 
-function buildRefineMessage(
-  updated: FloorPlan,
-  original: FloorPlan,
-  instruction: string
-): string {
-  const addedRooms = updated.rooms.filter(
-    (r) => !original.rooms.find((o) => o.id === r.id)
-  );
-  const removedRooms = original.rooms.filter(
-    (r) => !updated.rooms.find((u) => u.id === r.id)
-  );
-
-  let msg = `I've updated the floor plan based on your instruction.\n\n`;
-
-  if (addedRooms.length > 0) {
-    msg += `**Added:** ${addedRooms.map((r) => r.label).join(', ')}\n`;
-  }
-  if (removedRooms.length > 0) {
-    msg += `**Removed:** ${removedRooms.map((r) => r.label).join(', ')}\n`;
-  }
-
-  msg += `\n**Updated Area:** ~${updated.totalArea}m²\n**Footprint:** ${updated.width}m × ${updated.depth}m`;
+function buildRefineMessage(updated: FloorPlan, original: FloorPlan, instruction: string): string {
+  const added = updated.rooms.filter(r => !original.rooms.find(o => o.id === r.id));
+  const removed = original.rooms.filter(r => !updated.rooms.find(u => u.id === r.id));
+  let msg = 'Floor plan updated.\n\n';
+  if (added.length > 0) msg += `**Added:** ${added.map(r => r.label).join(', ')}\n`;
+  if (removed.length > 0) msg += `**Removed:** ${removed.map(r => r.label).join(', ')}\n`;
+  msg += `\n**Area:** ~${updated.totalArea}m²  ·  **Footprint:** ${updated.width.toFixed(1)}m × ${updated.depth.toFixed(1)}m`;
   return msg;
 }

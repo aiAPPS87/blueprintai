@@ -2,20 +2,15 @@
 
 // ============================================================
 // Blueprint AI — Canvas Editor (pure HTML5 Canvas 2D)
-// No react-konva dependency — avoids React 18.3 reconciler issues
+// Architectural rendering: "black house, carved rooms"
+// Y increases downward (matches layout engine convention)
 // ============================================================
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { FloorPlan, Room, Wall } from '@/types/plan';
-import { moveRoom, resizeRoom } from '@/lib/floorPlanEngine';
+import { FloorPlan, Room } from '@/types/plan';
+import { moveRoom, EXT_WALL, INT_WALL } from '@/lib/floorPlanEngine';
 
-const BASE_PPM = 60;
-const GRID_COLOR = '#E5E7EB';
-const EXT_WALL_COLOR = '#1F2937';
-const INT_WALL_COLOR = '#6B7280';
-const SELECTED_COLOR = '#0284C7';
-const FONT = '500 13px Inter, Arial, sans-serif';
-const FONT_DIM = '400 10px Inter, Arial, sans-serif';
+const BASE_PPM = 50; // pixels per meter at 100%
 
 interface CanvasEditorProps {
   plan: FloorPlan | null;
@@ -25,47 +20,32 @@ interface CanvasEditorProps {
   showGrid?: boolean;
 }
 
-function mToPx(m: number, scale: number) { return m * scale; }
-function pxToM(px: number, scale: number) { return px / scale; }
-
-// ============================================================
-// Main Component
-// ============================================================
-
 export default function CanvasEditor({
-  plan,
-  onPlanChange,
-  selectedRoomId,
-  onSelectRoom,
-  showGrid = true,
+  plan, onPlanChange, selectedRoomId, onSelectRoom, showGrid = true,
 }: CanvasEditorProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [scale, setScale] = useState(BASE_PPM);
-  const [offset, setOffset] = useState({ x: 60, y: 60 });
+  const [offset, setOffset] = useState({ x: 80, y: 60 });
   const [size, setSize] = useState({ w: 800, h: 600 });
 
-  // drag-room state
   const dragging = useRef<{ roomId: string; startMX: number; startMY: number; startRX: number; startRY: number } | null>(null);
-  // pan state
   const panning = useRef<{ lastX: number; lastY: number } | null>(null);
 
-  // ---- Resize observer ----
+  // Resize observer
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => {
-      setSize({ w: el.offsetWidth, h: el.offsetHeight });
-    });
+    const ro = new ResizeObserver(() => setSize({ w: el.offsetWidth, h: el.offsetHeight }));
     ro.observe(el);
     setSize({ w: el.offsetWidth, h: el.offsetHeight });
     return () => ro.disconnect();
   }, []);
 
-  // ---- Auto-fit when plan first arrives ----
+  // Auto-fit when plan first arrives
   useEffect(() => {
     if (!plan || !wrapRef.current) return;
-    const margin = 80;
+    const margin = 100;
     const sx = (wrapRef.current.offsetWidth - margin * 2) / (plan.width * BASE_PPM);
     const sy = (wrapRef.current.offsetHeight - margin * 2) / (plan.depth * BASE_PPM);
     setScale(Math.min(sx, sy, 1.5) * BASE_PPM);
@@ -86,68 +66,80 @@ export default function CanvasEditor({
     canvas.style.width = `${size.w}px`;
     canvas.style.height = `${size.h}px`;
     ctx.scale(dpr, dpr);
-
     ctx.clearRect(0, 0, size.w, size.h);
     ctx.fillStyle = '#F3F4F6';
     ctx.fillRect(0, 0, size.w, size.h);
 
-    if (!plan) {
-      drawEmpty(ctx, size.w, size.h);
-      return;
-    }
+    if (!plan) { drawEmpty(ctx, size.w, size.h); return; }
 
-    const planW = mToPx(plan.width, scale);
-    const planH = mToPx(plan.depth, scale);
+    const planW = plan.width * scale;
+    const planH = plan.depth * scale;
     const ox = offset.x;
     const oy = offset.y;
 
-    // Grid
-    if (showGrid) drawGrid(ctx, ox, oy, planW, planH, scale, size.w, size.h);
+    // Optional grid
+    if (showGrid) drawGrid(ctx, ox, oy, planW, planH, scale);
 
-    // House shadow + white fill
+    // Drop shadow on house
     ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.12)';
-    ctx.shadowBlur = 16;
-    ctx.shadowOffsetX = 2;
+    ctx.shadowColor = 'rgba(0,0,0,0.22)';
+    ctx.shadowBlur = 18;
+    ctx.shadowOffsetX = 3;
     ctx.shadowOffsetY = 4;
-    ctx.fillStyle = '#fff';
+    ctx.fillStyle = '#1F2937'; // wall color
     ctx.fillRect(ox, oy, planW, planH);
     ctx.restore();
 
-    // Rooms
+    // House footprint (walls = dark fill, rooms carved out)
+    ctx.fillStyle = '#1F2937';
+    ctx.fillRect(ox, oy, planW, planH);
+
+    // Carve out each room interior
     for (const room of plan.rooms) {
-      drawRoom(ctx, room, scale, plan.depth, ox, oy, room.id === selectedRoomId);
+      const rx = ox + room.x * scale;
+      const ry = oy + room.y * scale;
+      const rw = room.width * scale;
+      const rh = room.height * scale;
+
+      ctx.fillStyle = room.color || '#F5F5F5';
+      ctx.fillRect(rx, ry, rw, rh);
+
+      // Selected room highlight
+      if (room.id === selectedRoomId) {
+        ctx.strokeStyle = '#2563EB';
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([]);
+        ctx.strokeRect(rx + 1, ry + 1, rw - 2, rh - 2);
+      }
     }
 
-    // Interior walls
-    for (const wall of plan.walls.filter(w => w.type === 'interior')) {
-      drawWall(ctx, wall, scale, plan.depth, ox, oy, INT_WALL_COLOR);
+    // Door symbols between adjacent rooms
+    drawDoors(ctx, plan, scale, ox, oy);
+
+    // Room labels
+    for (const room of plan.rooms) {
+      drawRoomLabel(ctx, room, scale, ox, oy, room.id === selectedRoomId);
     }
 
-    // Exterior border
-    ctx.strokeStyle = EXT_WALL_COLOR;
-    ctx.lineWidth = 3;
-    ctx.strokeRect(ox, oy, planW, planH);
+    // Exterior dimension lines
+    drawDimensions(ctx, plan, scale, ox, oy);
 
     // North arrow
-    drawNorthArrow(ctx, size.w - 55, 55);
+    drawNorthArrow(ctx, ox + planW + 50, oy + 44);
 
     // Scale bar
-    drawScaleBar(ctx, ox, oy + planH + 24, scale);
+    drawScaleBar(ctx, ox, oy + planH + 36, scale);
 
   }, [plan, scale, offset, size, showGrid, selectedRoomId]);
 
-  // ---- Hit-test: which room did the pointer land in? ----
+  // ---- Hit test ----
   const hitRoom = useCallback((cx: number, cy: number): Room | null => {
     if (!plan) return null;
-    const ox = offset.x, oy = offset.y;
     for (let i = plan.rooms.length - 1; i >= 0; i--) {
       const r = plan.rooms[i];
-      const rx = ox + mToPx(r.x, scale);
-      const ry = oy + mToPx(plan.depth - r.y - r.height, scale);
-      const rw = mToPx(r.width, scale);
-      const rh = mToPx(r.height, scale);
-      if (cx >= rx && cx <= rx + rw && cy >= ry && cy <= ry + rh) return r;
+      const rx = offset.x + r.x * scale;
+      const ry = offset.y + r.y * scale;
+      if (cx >= rx && cx <= rx + r.width * scale && cy >= ry && cy <= ry + r.height * scale) return r;
     }
     return null;
   }, [plan, offset, scale]);
@@ -158,7 +150,6 @@ export default function CanvasEditor({
     const cx = e.clientX - rect.left;
     const cy = e.clientY - rect.top;
 
-    // Middle-button or Alt+left = pan
     if (e.button === 1 || (e.button === 0 && e.altKey)) {
       panning.current = { lastX: e.clientX, lastY: e.clientY };
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -168,13 +159,7 @@ export default function CanvasEditor({
     const room = hitRoom(cx, cy);
     if (room) {
       onSelectRoom(room.id);
-      dragging.current = {
-        roomId: room.id,
-        startMX: e.clientX,
-        startMY: e.clientY,
-        startRX: room.x,
-        startRY: room.y,
-      };
+      dragging.current = { roomId: room.id, startMX: e.clientX, startMY: e.clientY, startRX: room.x, startRY: room.y };
       e.currentTarget.setPointerCapture(e.pointerId);
     } else {
       onSelectRoom(null);
@@ -182,7 +167,6 @@ export default function CanvasEditor({
   }, [hitRoom, onSelectRoom]);
 
   const onPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    // Pan
     if (panning.current) {
       const dx = e.clientX - panning.current.lastX;
       const dy = e.clientY - panning.current.lastY;
@@ -190,13 +174,10 @@ export default function CanvasEditor({
       setOffset(o => ({ x: o.x + dx, y: o.y + dy }));
       return;
     }
-    // Drag room
     if (dragging.current && plan) {
-      const dx = pxToM(e.clientX - dragging.current.startMX, scale);
-      const dy = pxToM(dragging.current.startMY - e.clientY, scale); // Y flip
-      const newX = dragging.current.startRX + dx;
-      const newY = dragging.current.startRY + dy;
-      onPlanChange(moveRoom(plan, dragging.current.roomId, newX, newY));
+      const dx = (e.clientX - dragging.current.startMX) / scale;
+      const dy = (e.clientY - dragging.current.startMY) / scale; // Y-down, no flip
+      onPlanChange(moveRoom(plan, dragging.current.roomId, dragging.current.startRX + dx, dragging.current.startRY + dy));
     }
   }, [plan, scale, onPlanChange]);
 
@@ -212,7 +193,7 @@ export default function CanvasEditor({
 
   const handleFit = () => {
     if (!plan || !wrapRef.current) return;
-    const margin = 80;
+    const margin = 100;
     const sx = (wrapRef.current.offsetWidth - margin * 2) / (plan.width * BASE_PPM);
     const sy = (wrapRef.current.offsetHeight - margin * 2) / (plan.depth * BASE_PPM);
     setScale(Math.min(sx, sy) * BASE_PPM);
@@ -243,12 +224,12 @@ export default function CanvasEditor({
         <button onClick={handleFit} className="px-3 py-1.5 text-xs hover:bg-gray-50 border-t border-gray-100">Fit</button>
       </div>
 
-      {/* Selected room tooltip */}
+      {/* Selected room info */}
       {selectedRoom && (
         <div className="absolute top-3 left-3 bg-white rounded-lg shadow border border-gray-200 px-3 py-2 text-sm pointer-events-none">
           <p className="font-semibold text-gray-800">{selectedRoom.label}</p>
           <p className="text-gray-500">
-            {selectedRoom.width.toFixed(1)}m × {selectedRoom.height.toFixed(1)}m = {(selectedRoom.width * selectedRoom.height).toFixed(1)}m²
+            {selectedRoom.width.toFixed(1)}m × {selectedRoom.height.toFixed(1)}m &nbsp;=&nbsp; {(selectedRoom.width * selectedRoom.height).toFixed(1)}m²
           </p>
           <p className="text-xs text-gray-400 mt-0.5">Drag to move · Alt+drag to pan</p>
         </div>
@@ -266,105 +247,235 @@ function drawEmpty(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.font = '500 16px Inter, Arial, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('No floor plan yet', w / 2, h / 2 - 12);
+  ctx.fillText('No floor plan yet', w / 2, h / 2 - 14);
   ctx.font = '400 13px Inter, Arial, sans-serif';
   ctx.fillStyle = '#D1D5DB';
-  ctx.fillText('Configure your house in the left panel and click Generate', w / 2, h / 2 + 16);
+  ctx.fillText('Configure your house in the left panel and click Generate', w / 2, h / 2 + 14);
 }
 
-function drawGrid(
-  ctx: CanvasRenderingContext2D,
-  ox: number, oy: number,
-  planW: number, planH: number,
-  scale: number,
-  stageW: number, stageH: number
-) {
-  ctx.strokeStyle = GRID_COLOR;
+function drawGrid(ctx: CanvasRenderingContext2D, ox: number, oy: number, planW: number, planH: number, scale: number) {
+  ctx.strokeStyle = 'rgba(156,163,175,0.4)';
   ctx.lineWidth = 0.5;
-  const step = mToPx(1, scale);
-  for (let x = 0; x <= planW + 0.1; x += step) {
-    ctx.beginPath();
-    ctx.moveTo(ox + x, 0);
-    ctx.lineTo(ox + x, stageH);
-    ctx.stroke();
+  const step = 1 * scale; // 1m grid
+  for (let x = 0; x <= planW + 0.5; x += step) {
+    ctx.beginPath(); ctx.moveTo(ox + x, oy); ctx.lineTo(ox + x, oy + planH); ctx.stroke();
   }
-  for (let y = 0; y <= planH + 0.1; y += step) {
-    ctx.beginPath();
-    ctx.moveTo(0, oy + y);
-    ctx.lineTo(stageW, oy + y);
-    ctx.stroke();
+  for (let y = 0; y <= planH + 0.5; y += step) {
+    ctx.beginPath(); ctx.moveTo(ox, oy + y); ctx.lineTo(ox + planW, oy + y); ctx.stroke();
   }
 }
 
-function drawRoom(
-  ctx: CanvasRenderingContext2D,
-  room: Room,
-  scale: number,
-  planDepth: number,
-  ox: number, oy: number,
-  selected: boolean
+function drawRoomLabel(
+  ctx: CanvasRenderingContext2D, room: Room, scale: number, ox: number, oy: number, selected: boolean
 ) {
-  const x = ox + mToPx(room.x, scale);
-  const y = oy + mToPx(planDepth - room.y - room.height, scale);
-  const w = mToPx(room.width, scale);
-  const h = mToPx(room.height, scale);
+  const rx = ox + room.x * scale;
+  const ry = oy + room.y * scale;
+  const rw = room.width * scale;
+  const rh = room.height * scale;
 
-  // Fill
-  ctx.fillStyle = room.color || '#F5F5F5';
-  ctx.fillRect(x, y, w, h);
-
-  // Border
-  ctx.strokeStyle = selected ? SELECTED_COLOR : '#9CA3AF';
-  ctx.lineWidth = selected ? 2.5 : 1;
-  ctx.strokeRect(x, y, w, h);
-
-  // Selection corner handles
-  if (selected) {
-    ctx.fillStyle = SELECTED_COLOR;
-    const hs = 5;
-    for (const [hx, hy] of [[x - hs/2, y - hs/2], [x + w - hs/2, y - hs/2], [x - hs/2, y + h - hs/2], [x + w - hs/2, y + h - hs/2]]) {
-      ctx.fillRect(hx, hy, hs, hs);
-    }
-  }
-
-  // Label
   ctx.save();
-  ctx.clip(); // keep text inside room
-  const labelSize = Math.max(9, Math.min(13, w / 9));
-  ctx.font = `600 ${labelSize}px Inter, Arial, sans-serif`;
-  ctx.fillStyle = '#111827';
+  ctx.beginPath();
+  ctx.rect(rx + 2, ry + 2, rw - 4, rh - 4);
+  ctx.clip();
+
+  const nameSize = Math.max(8, Math.min(13, rw / 8));
+  const dimSize = Math.max(7, Math.min(10, rw / 10));
+  const centerX = rx + rw / 2;
+  const centerY = ry + rh / 2;
+
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(room.label, x + w / 2, y + h / 2 - labelSize * 0.6);
 
-  const dimSize = Math.max(8, Math.min(11, w / 11));
+  // Room name
+  ctx.font = `600 ${nameSize}px Inter, Arial, sans-serif`;
+  ctx.fillStyle = selected ? '#1D4ED8' : '#111827';
+  ctx.fillText(room.label, centerX, centerY - dimSize * 0.9);
+
+  // Dimensions
   ctx.font = `400 ${dimSize}px Inter, Arial, sans-serif`;
-  ctx.fillStyle = '#6B7280';
-  ctx.fillText(`${room.width.toFixed(1)} × ${room.height.toFixed(1)}m`, x + w / 2, y + h / 2 + dimSize * 0.9);
+  ctx.fillStyle = selected ? '#3B82F6' : '#6B7280';
+  ctx.fillText(`${room.width.toFixed(1)} × ${room.height.toFixed(1)}m`, centerX, centerY + nameSize * 0.8);
+
   ctx.restore();
 }
 
-function drawWall(
-  ctx: CanvasRenderingContext2D,
-  wall: Wall,
-  scale: number,
-  planDepth: number,
-  ox: number, oy: number,
-  color: string
-) {
-  ctx.strokeStyle = color;
-  ctx.lineWidth = Math.max(1, mToPx(wall.thickness, scale) * 0.4);
-  ctx.beginPath();
-  ctx.moveTo(ox + mToPx(wall.x1, scale), oy + mToPx(planDepth - wall.y1, scale));
-  ctx.lineTo(ox + mToPx(wall.x2, scale), oy + mToPx(planDepth - wall.y2, scale));
-  ctx.stroke();
+// ============================================================
+// Door symbols between adjacent rooms
+// ============================================================
+
+function drawDoors(ctx: CanvasRenderingContext2D, plan: FloorPlan, scale: number, ox: number, oy: number) {
+  const tol = INT_WALL * 1.5; // tolerance for adjacency detection
+  const rooms = plan.rooms;
+
+  for (let i = 0; i < rooms.length; i++) {
+    for (let j = i + 1; j < rooms.length; j++) {
+      const a = rooms[i];
+      const b = rooms[j];
+
+      // Skip hallway-to-hallway (shouldn't exist) and same type utility spaces
+      const skipTypes: string[] = ['garage'];
+      if (skipTypes.includes(a.type) || skipTypes.includes(b.type)) continue;
+
+      // Horizontal shared edge: a's bottom = b's top (or vice versa)
+      const aBottom = a.y + a.height;
+      const bBottom = b.y + b.height;
+
+      if (Math.abs(aBottom - b.y) < tol || Math.abs(bBottom - a.y) < tol) {
+        // Horizontal edge shared
+        const topRoom = aBottom < b.y + tol ? a : b;
+        const botRoom = topRoom === a ? b : a;
+        const sharedY = topRoom.y + topRoom.height;
+
+        // Overlap in X
+        const overlapLeft = Math.max(topRoom.x, botRoom.x);
+        const overlapRight = Math.min(topRoom.x + topRoom.width, botRoom.x + botRoom.width);
+        if (overlapRight - overlapLeft < 0.6) continue;
+
+        const midX = (overlapLeft + overlapRight) / 2;
+        const doorW = Math.min(0.9, overlapRight - overlapLeft - 0.1);
+        drawDoorSymbolH(ctx, scale, ox, oy, midX - doorW / 2, sharedY, doorW);
+      }
+
+      // Vertical shared edge: a's right = b's left (or vice versa)
+      const aRight = a.x + a.width;
+      const bRight = b.x + b.width;
+
+      if (Math.abs(aRight - b.x) < tol || Math.abs(bRight - a.x) < tol) {
+        const leftRoom = aRight < b.x + tol ? a : b;
+        const rightRoom = leftRoom === a ? b : a;
+        const sharedX = leftRoom.x + leftRoom.width;
+
+        const overlapTop = Math.max(leftRoom.y, rightRoom.y);
+        const overlapBot = Math.min(leftRoom.y + leftRoom.height, rightRoom.y + rightRoom.height);
+        if (overlapBot - overlapTop < 0.6) continue;
+
+        const midY = (overlapTop + overlapBot) / 2;
+        const doorH = Math.min(0.9, overlapBot - overlapTop - 0.1);
+        drawDoorSymbolV(ctx, scale, ox, oy, sharedX, midY - doorH / 2, doorH);
+      }
+    }
+  }
 }
 
+function drawDoorSymbolH(
+  ctx: CanvasRenderingContext2D, scale: number, ox: number, oy: number,
+  doorX: number, wallY: number, doorW: number
+) {
+  // Gap in wall line, quarter-circle arc showing door swing
+  const x = ox + doorX * scale;
+  const y = oy + wallY * scale;
+  const w = doorW * scale;
+  const arc = w; // radius = door width
+
+  ctx.save();
+  ctx.strokeStyle = '#374151';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([]);
+
+  // Door leaf line
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + w, y);
+  ctx.stroke();
+
+  // Door swing arc (quarter circle)
+  ctx.beginPath();
+  ctx.arc(x, y, arc, 0, Math.PI / 2);
+  ctx.setLineDash([3, 2]);
+  ctx.strokeStyle = '#9CA3AF';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawDoorSymbolV(
+  ctx: CanvasRenderingContext2D, scale: number, ox: number, oy: number,
+  wallX: number, doorY: number, doorH: number
+) {
+  const x = ox + wallX * scale;
+  const y = oy + doorY * scale;
+  const h = doorH * scale;
+
+  ctx.save();
+  ctx.strokeStyle = '#374151';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([]);
+
+  // Door leaf
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x, y + h);
+  ctx.stroke();
+
+  // Door swing arc
+  ctx.beginPath();
+  ctx.arc(x, y, h, Math.PI / 2, Math.PI);
+  ctx.setLineDash([3, 2]);
+  ctx.strokeStyle = '#9CA3AF';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// ============================================================
+// Exterior dimension lines
+// ============================================================
+
+function drawDimensions(
+  ctx: CanvasRenderingContext2D, plan: FloorPlan, scale: number, ox: number, oy: number
+) {
+  const planW = plan.width * scale;
+  const planH = plan.depth * scale;
+  const DIM_OFFSET = 28;
+  const TICK = 6;
+
+  ctx.save();
+  ctx.strokeStyle = '#374151';
+  ctx.fillStyle = '#374151';
+  ctx.lineWidth = 1;
+  ctx.font = '11px Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.setLineDash([]);
+
+  // Bottom dimension (width)
+  const dimY = oy + planH + DIM_OFFSET;
+  ctx.beginPath();
+  ctx.moveTo(ox, dimY - TICK); ctx.lineTo(ox, dimY + TICK); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(ox + planW, dimY - TICK); ctx.lineTo(ox + planW, dimY + TICK); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(ox, dimY); ctx.lineTo(ox + planW, dimY); ctx.stroke();
+  ctx.fillText(`${plan.width.toFixed(1)}m`, ox + planW / 2, dimY - 10);
+
+  // Right dimension (depth)
+  const dimX = ox + planW + DIM_OFFSET;
+  ctx.beginPath();
+  ctx.moveTo(dimX - TICK, oy); ctx.lineTo(dimX + TICK, oy); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(dimX - TICK, oy + planH); ctx.lineTo(dimX + TICK, oy + planH); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(dimX, oy); ctx.lineTo(dimX, oy + planH); ctx.stroke();
+
+  ctx.save();
+  ctx.translate(dimX + 10, oy + planH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText(`${plan.depth.toFixed(1)}m`, 0, 0);
+  ctx.restore();
+
+  ctx.restore();
+}
+
+// ============================================================
+// North arrow
+// ============================================================
+
 function drawNorthArrow(ctx: CanvasRenderingContext2D, cx: number, cy: number) {
-  const r = 22;
+  const r = 20;
   ctx.save();
 
-  // Circle
   ctx.beginPath();
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.fillStyle = 'white';
@@ -373,43 +484,56 @@ function drawNorthArrow(ctx: CanvasRenderingContext2D, cx: number, cy: number) {
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
-  // Arrow (pointing up = North)
+  // Filled north half (dark)
   ctx.fillStyle = '#1F2937';
   ctx.beginPath();
-  ctx.moveTo(cx, cy - r + 6);
-  ctx.lineTo(cx - 6, cy + 6);
-  ctx.lineTo(cx, cy + 2);
-  ctx.lineTo(cx + 6, cy + 6);
+  ctx.moveTo(cx, cy - r + 5);
+  ctx.lineTo(cx - 5, cy + 4);
+  ctx.lineTo(cx, cy + 1);
   ctx.closePath();
   ctx.fill();
 
-  // N label
-  ctx.font = 'bold 11px Arial';
+  // Outline south half (light)
+  ctx.fillStyle = '#D1D5DB';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - r + 5);
+  ctx.lineTo(cx + 5, cy + 4);
+  ctx.lineTo(cx, cy + 1);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#6B7280';
+  ctx.lineWidth = 0.5;
+  ctx.stroke();
+
+  ctx.font = 'bold 10px Arial';
   ctx.fillStyle = '#1F2937';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'bottom';
-  ctx.fillText('N', cx, cy - r + 5);
+  ctx.fillText('N', cx, cy - r + 4);
 
   ctx.restore();
 }
 
+// ============================================================
+// Scale bar
+// ============================================================
+
 function drawScaleBar(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) {
-  const len = mToPx(5, scale);
+  const len = 5 * scale; // 5m
+  ctx.save();
   ctx.strokeStyle = '#374151';
+  ctx.fillStyle = '#374151';
   ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(x, y);
-  ctx.lineTo(x + len, y);
-  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Baseline
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + len, y); ctx.stroke();
   // End ticks
   for (const tx of [x, x + len]) {
-    ctx.beginPath();
-    ctx.moveTo(tx, y - 4);
-    ctx.lineTo(tx, y + 4);
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(tx, y - 4); ctx.lineTo(tx, y + 4); ctx.stroke();
   }
+  // Labels
   ctx.font = '11px Arial';
-  ctx.fillStyle = '#374151';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   ctx.fillText('0', x, y + 6);
@@ -417,4 +541,5 @@ function drawScaleBar(ctx: CanvasRenderingContext2D, x: number, y: number, scale
   ctx.fillStyle = '#9CA3AF';
   ctx.font = '10px Arial';
   ctx.fillText('Scale 1:100', x + len / 2, y + 18);
+  ctx.restore();
 }
