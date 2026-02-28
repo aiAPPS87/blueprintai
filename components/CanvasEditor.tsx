@@ -6,7 +6,6 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Stage, Layer, Rect, Text, Group, Line, Arrow } from 'react-konva';
-import Konva from 'konva';
 import { FloorPlan, Room, Wall } from '@/types/plan';
 import { moveRoom, resizeRoom } from '@/lib/floorPlanEngine';
 
@@ -139,7 +138,7 @@ export default function CanvasEditor({
           </svg>
           <p className="text-lg font-medium text-gray-400">No floor plan yet</p>
           <p className="text-sm text-gray-300 mt-1">
-            Describe your house in the chat panel to get started
+            Configure your house in the left panel and click Generate
           </p>
         </div>
       </div>

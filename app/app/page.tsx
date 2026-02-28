@@ -10,6 +10,7 @@ import Link from 'next/link';
 import { FloorPlan } from '@/types/plan';
 import PlanForm from '@/components/PlanForm';
 import ExportButtons from '@/components/ExportButtons';
+import ErrorBoundary from '@/components/ErrorBoundary';
 
 // Konva must be loaded client-side only
 const CanvasEditor = dynamic(() => import('@/components/CanvasEditor'), {
@@ -247,13 +248,15 @@ export default function EditorPage() {
             </div>
           )}
 
-          <CanvasEditor
-            plan={plan}
-            onPlanChange={handlePlanChange}
-            selectedRoomId={selectedRoomId}
-            onSelectRoom={setSelectedRoomId}
-            showGrid={showGrid}
-          />
+          <ErrorBoundary>
+            <CanvasEditor
+              plan={plan}
+              onPlanChange={handlePlanChange}
+              selectedRoomId={selectedRoomId}
+              onSelectRoom={setSelectedRoomId}
+              showGrid={showGrid}
+            />
+          </ErrorBoundary>
         </div>
       </div>
 
