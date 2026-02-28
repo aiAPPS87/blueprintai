@@ -209,8 +209,6 @@ export default function EditorPage() {
           <ExportButtons
             plan={plan}
             projectName={planName}
-            canDownload={false}
-            onUpgrade={() => alert('Upgrade to Pro to download DXF files!')}
           />
 
           <Link

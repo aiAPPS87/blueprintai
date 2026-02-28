@@ -14,6 +14,7 @@
     "@supabase/ssr": "^0.5.0",
     "@supabase/supabase-js": "^2.45.0",
     "dxf-writer": "^1.0.5",
+    "jspdf": "^4.2.0",
     "next": "^15.5.12",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
