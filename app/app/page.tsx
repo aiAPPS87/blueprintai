@@ -4,7 +4,7 @@
 // Blueprint AI — Main Editor Page
 // ============================================================
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, Suspense } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
@@ -23,6 +23,17 @@ const CanvasEditor = dynamic(() => import('@/components/CanvasEditor'), {
   ),
 });
 
+// Extracted so it can be wrapped in <Suspense> — required by Next.js for useSearchParams
+function SearchParamsHandler({ onGenerate }: { onGenerate: (prompt: string) => void }) {
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    const prompt = searchParams.get('prompt');
+    if (prompt) onGenerate(prompt);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return null;
+}
+
 export default function EditorPage() {
   const [plan, setPlan] = useState<FloorPlan | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -35,18 +46,10 @@ export default function EditorPage() {
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const nameInputRef = useRef<HTMLInputElement>(null);
-  const searchParams = useSearchParams();
 
   useEffect(() => {
     if (editingName) nameInputRef.current?.select();
   }, [editingName]);
-
-  // Auto-generate if ?prompt= query param is present (from landing page gallery)
-  useEffect(() => {
-    const prompt = searchParams.get('prompt');
-    if (prompt) handleGenerate(prompt);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // Push plan to undo history
   const pushHistory = useCallback((p: FloorPlan) => {
@@ -228,6 +231,11 @@ export default function EditorPage() {
           </Link>
         </div>
       </header>
+
+      {/* Reads ?prompt= from URL and triggers auto-generate */}
+      <Suspense fallback={null}>
+        <SearchParamsHandler onGenerate={handleGenerate} />
+      </Suspense>
 
       {/* ---- Main Content ---- */}
       <div className="flex flex-1 overflow-hidden">
