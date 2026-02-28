@@ -18,8 +18,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ plan, message });
   } catch (error) {
     console.error('[/api/generate] Error:', error);
-    const message =
-      error instanceof Error ? error.message : 'Failed to generate floor plan';
+    // Surface a clear message when the API key is missing
+    const raw = error instanceof Error ? error.message : String(error);
+    const message = raw.includes('apiKey') || raw.includes('API key') || raw.includes('authentication')
+      ? 'Anthropic API key is not configured. Add ANTHROPIC_API_KEY to your Vercel environment variables.'
+      : raw;
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
