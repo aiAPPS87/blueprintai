@@ -7,10 +7,9 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
-import { FloorPlan, ChatMessage } from '@/types/plan';
-import ChatPanel from '@/components/ChatPanel';
+import { FloorPlan } from '@/types/plan';
+import PlanForm from '@/components/PlanForm';
 import ExportButtons from '@/components/ExportButtons';
-import { v4 as uuidv4 } from 'uuid';
 
 // Konva must be loaded client-side only
 const CanvasEditor = dynamic(() => import('@/components/CanvasEditor'), {
@@ -24,8 +23,8 @@ const CanvasEditor = dynamic(() => import('@/components/CanvasEditor'), {
 
 export default function EditorPage() {
   const [plan, setPlan] = useState<FloorPlan | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [showGrid, setShowGrid] = useState(true);
   const [planName, setPlanName] = useState('Untitled Plan');
@@ -35,17 +34,13 @@ export default function EditorPage() {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const nameInputRef = useRef<HTMLInputElement>(null);
 
-  // Focus name input when editing
   useEffect(() => {
     if (editingName) nameInputRef.current?.select();
   }, [editingName]);
 
-  // Push plan to history
+  // Push plan to undo history
   const pushHistory = useCallback((p: FloorPlan) => {
-    setHistory((h) => {
-      const newH = [...h.slice(0, historyIdx + 1), p];
-      return newH.slice(-20); // Keep last 20 states
-    });
+    setHistory((h) => [...h.slice(0, historyIdx + 1), p].slice(-20));
     setHistoryIdx((i) => Math.min(i + 1, 19));
   }, [historyIdx]);
 
@@ -63,68 +58,25 @@ export default function EditorPage() {
     }
   };
 
-  // Add message to chat
-  const addMessage = (role: 'user' | 'assistant', content: string): ChatMessage => {
-    const msg: ChatMessage = {
-      id: uuidv4(),
-      role,
-      content,
-      timestamp: Date.now(),
-    };
-    setMessages((m) => [...m, msg]);
-    return msg;
-  };
-
-  // ---- Generate ----
-  const handleGenerate = async (userInput: string) => {
-    addMessage('user', userInput);
+  // ---- Generate from form description ----
+  const handleGenerate = async (description: string) => {
     setIsLoading(true);
+    setError(null);
     try {
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userInput }),
+        body: JSON.stringify({ userInput: description }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Generation failed');
 
-      const newPlan = { ...data.plan, name: planName };
+      const newPlan: FloorPlan = { ...data.plan, name: planName };
       setPlan(newPlan);
       pushHistory(newPlan);
-      addMessage('assistant', data.message);
+      setSelectedRoomId(null);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Something went wrong';
-      addMessage('assistant', `Sorry, I encountered an error: ${msg}\n\nPlease try again or rephrase your description.`);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // ---- Refine ----
-  const handleRefine = async (instruction: string) => {
-    if (!plan) return;
-    addMessage('user', instruction);
-    setIsLoading(true);
-    try {
-      const res = await fetch('/api/refine', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          currentPlan: plan,
-          userInstruction: instruction,
-          conversationHistory: messages.slice(-10),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Refinement failed');
-
-      const updated = { ...data.plan, name: planName };
-      setPlan(updated);
-      pushHistory(updated);
-      addMessage('assistant', data.message);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Something went wrong';
-      addMessage('assistant', `Sorry, I couldn't apply that change: ${msg}\n\nTry rephrasing, e.g. "make bedroom 1 larger" or "add a second bathroom".`);
+      setError(err instanceof Error ? err.message : 'Generation failed. Check your API key.');
     } finally {
       setIsLoading(false);
     }
@@ -136,15 +88,12 @@ export default function EditorPage() {
     pushHistory(updated);
   }, [pushHistory]);
 
-  // ---- Save plan ----
+  // ---- Save ----
   const handleSave = async () => {
     if (!plan) return;
     setSaveStatus('saving');
     try {
-      // In a real app, get the auth token from Supabase session
-      // For now, just update the plan name and show saved
-      const savedPlan = { ...plan, name: planName };
-      setPlan(savedPlan);
+      setPlan({ ...plan, name: planName });
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 2000);
     } catch {
@@ -162,10 +111,11 @@ export default function EditorPage() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 overflow-hidden">
+
       {/* ---- Top Bar ---- */}
       <header className="flex items-center gap-3 px-4 py-2 bg-white border-b border-gray-200 shrink-0 z-10">
         {/* Logo */}
-        <Link href="/" className="flex items-center gap-2 mr-2">
+        <Link href="/" className="flex items-center gap-2 mr-2 shrink-0">
           <div className="w-7 h-7 rounded-lg bg-sky-600 flex items-center justify-center">
             <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -193,7 +143,8 @@ export default function EditorPage() {
             >
               {planName}
               <svg className="w-3 h-3 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
               </svg>
             </button>
           )}
@@ -205,14 +156,14 @@ export default function EditorPage() {
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-2">
-          {/* Undo/Redo */}
-          <div className="flex items-center gap-1 border border-gray-200 rounded-lg overflow-hidden">
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Undo / Redo */}
+          <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden">
             <button
               onClick={undo}
               disabled={historyIdx <= 0}
               className="px-2 py-1.5 text-gray-500 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed text-xs"
-              title="Undo (Ctrl+Z)"
+              title="Undo"
             >
               ↩
             </button>
@@ -220,7 +171,7 @@ export default function EditorPage() {
               onClick={redo}
               disabled={historyIdx >= history.length - 1}
               className="px-2 py-1.5 text-gray-500 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed text-xs border-l border-gray-200"
-              title="Redo (Ctrl+Y)"
+              title="Redo"
             >
               ↪
             </button>
@@ -242,13 +193,13 @@ export default function EditorPage() {
           <button
             onClick={handleSave}
             disabled={!plan || saveStatus === 'saving'}
-            className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+            className={`px-3 py-1.5 text-sm rounded-lg border transition-colors disabled:opacity-40 ${
               saveStatus === 'saved'
                 ? 'bg-green-50 border-green-300 text-green-700'
                 : saveStatus === 'error'
                 ? 'bg-red-50 border-red-300 text-red-700'
                 : 'border-gray-200 text-gray-600 hover:bg-gray-50'
-            } disabled:opacity-40`}
+            }`}
           >
             {saveLabel}
           </button>
@@ -257,11 +208,10 @@ export default function EditorPage() {
           <ExportButtons
             plan={plan}
             projectName={planName}
-            canDownload={false} // Set to true for paid users
+            canDownload={false}
             onUpgrade={() => alert('Upgrade to Pro to download DXF files!')}
           />
 
-          {/* Dashboard link */}
           <Link
             href="/dashboard"
             className="px-3 py-1.5 text-sm rounded-lg bg-gray-700 text-white hover:bg-gray-800 transition-colors"
@@ -273,19 +223,30 @@ export default function EditorPage() {
 
       {/* ---- Main Content ---- */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left: Chat Panel (30%) */}
-        <div className="w-80 lg:w-96 shrink-0 flex flex-col overflow-hidden border-r border-gray-200">
-          <ChatPanel
-            messages={messages}
+
+        {/* Left: Plan Form */}
+        <div className="w-72 xl:w-80 shrink-0 flex flex-col overflow-hidden">
+          <PlanForm
             onGenerate={handleGenerate}
-            onRefine={handleRefine}
             isLoading={isLoading}
-            hasPlan={!!plan}
+            plan={plan}
           />
         </div>
 
-        {/* Right: Canvas Editor (70%) */}
+        {/* Right: Canvas */}
         <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Error banner */}
+          {error && (
+            <div className="flex items-center gap-2 px-4 py-2 bg-red-50 border-b border-red-200 text-red-700 text-sm shrink-0">
+              <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <span className="flex-1">{error}</span>
+              <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600">✕</button>
+            </div>
+          )}
+
           <CanvasEditor
             plan={plan}
             onPlanChange={handlePlanChange}
@@ -296,15 +257,15 @@ export default function EditorPage() {
         </div>
       </div>
 
-      {/* ---- Bottom Status Bar ---- */}
+      {/* ---- Status Bar ---- */}
       <footer className="flex items-center justify-between px-4 py-1.5 bg-white border-t border-gray-200 text-xs text-gray-400 shrink-0">
         <span>
           {plan
-            ? `${plan.rooms.length} rooms · ${plan.totalArea}m² floor area`
-            : 'No plan loaded'}
+            ? `${plan.rooms.length} rooms · ${plan.totalArea}m² · ${plan.width}m × ${plan.depth}m`
+            : 'Configure your house and click Generate'}
         </span>
-        <span>Blueprint AI · Concept plans only, not for construction</span>
-        <span>Alt+drag to pan · Scroll to zoom</span>
+        <span className="hidden sm:block">Blueprint AI · Concept plans only, not for construction</span>
+        <span className="hidden md:block">Scroll to zoom · Alt+drag to pan</span>
       </footer>
     </div>
   );
