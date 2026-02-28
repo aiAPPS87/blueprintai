@@ -7,6 +7,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { FloorPlan } from '@/types/plan';
 import PlanForm from '@/components/PlanForm';
 import ExportButtons from '@/components/ExportButtons';
@@ -34,10 +35,18 @@ export default function EditorPage() {
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const searchParams = useSearchParams();
 
   useEffect(() => {
     if (editingName) nameInputRef.current?.select();
   }, [editingName]);
+
+  // Auto-generate if ?prompt= query param is present (from landing page gallery)
+  useEffect(() => {
+    const prompt = searchParams.get('prompt');
+    if (prompt) handleGenerate(prompt);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Push plan to undo history
   const pushHistory = useCallback((p: FloorPlan) => {
