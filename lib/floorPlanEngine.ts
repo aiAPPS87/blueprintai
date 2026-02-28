@@ -122,6 +122,22 @@ export function generateFloorPlan(spec: HouseSpec): FloorPlan {
   const zones: Sized[][] = [[], [], [], [], []];
   for (const r of sized) zones[zone(r.type)].push(r);
 
+  // --- Sort rooms within each zone for architectural adjacency ---
+  // Lower priority number = placed further left in the zone.
+  //   Zone 0: garage first (auto Entry/Alfresco added after)
+  //   Zone 1: living → dining → kitchen  (kitchen near laundry for plumbing)
+  //   Zone 3: wet cluster (laundry|bathroom) then master suite (master_bedroom|ensuite)
+  //   Zone 4: bedrooms first, then study, then storage
+  const ZONE_SORT: Partial<Record<RoomType, number>> = {
+    garage: 0,
+    living: 0, dining: 1, kitchen: 2,
+    laundry: 0, bathroom: 1, master_bedroom: 2, ensuite: 3,
+    bedroom: 0, study: 1, storage: 2,
+  };
+  for (const z of zones) {
+    z.sort((a, b) => (ZONE_SORT[a.type] ?? 50) - (ZONE_SORT[b.type] ?? 50));
+  }
+
   // --- Zone heights (tallest room in each zone) ---
   const needsHallway = zones[3].length > 0 || zones[4].length > 0;
   const zH: number[] = zones.map((z, i) => {

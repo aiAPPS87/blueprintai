@@ -33,20 +33,22 @@ export const ROOM_COLORS: Record<RoomType, string> = {
   storage: '#EEEEEE',
 };
 
+// Minimum sizes based on Australian residential building standards (NCC 2022).
+// These are hard floors — Claude should recommend larger typical sizes.
 export const ROOM_MIN_SIZES: Record<RoomType, { width: number; height: number }> = {
-  bedroom: { width: 3.0, height: 3.0 },
-  master_bedroom: { width: 4.0, height: 3.5 },
-  bathroom: { width: 1.8, height: 2.4 },
-  ensuite: { width: 1.5, height: 2.0 },
-  kitchen: { width: 3.0, height: 3.5 },
-  living: { width: 4.0, height: 4.0 },
-  dining: { width: 3.0, height: 3.5 },
-  garage: { width: 3.0, height: 5.5 },
-  laundry: { width: 1.8, height: 2.0 },
-  hallway: { width: 1.2, height: 1.2 },
-  corridor: { width: 1.2, height: 1.2 },
-  study: { width: 2.5, height: 2.5 },
-  storage: { width: 1.2, height: 1.5 },
+  bedroom:        { width: 3.0, height: 3.0 },   // NCC: 7.5 m² habitable min
+  master_bedroom: { width: 4.0, height: 3.5 },   // Typical AU: ~14–16 m²
+  bathroom:       { width: 2.0, height: 2.4 },   // Enough for vanity + toilet + shower
+  ensuite:        { width: 1.8, height: 2.2 },   // Compact ensuite minimum
+  kitchen:        { width: 3.5, height: 3.5 },   // Allows island bench
+  living:         { width: 4.5, height: 4.0 },   // Minimum comfortable lounge
+  dining:         { width: 3.0, height: 3.0 },   // 6-person table clearance
+  garage:         { width: 3.0, height: 5.5 },   // Single: 3.0m; double: 5.8m
+  laundry:        { width: 2.0, height: 2.0 },   // Tub + w/machine side-by-side
+  hallway:        { width: 1.2, height: 1.2 },
+  corridor:       { width: 1.2, height: 1.2 },
+  study:          { width: 2.5, height: 2.5 },
+  storage:        { width: 1.2, height: 1.5 },
 };
 
 export interface Room {
