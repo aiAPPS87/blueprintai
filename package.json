@@ -1,0 +1,36 @@
+{
+  "name": "blueprintai",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.36.0",
+    "@stripe/stripe-js": "^4.0.0",
+    "@supabase/ssr": "^0.5.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "dxf-writer": "^1.0.5",
+    "konva": "^9.3.0",
+    "next": "^16.1.6",
+    "react": "^18",
+    "react-dom": "^18",
+    "react-konva": "^18.2.10",
+    "stripe": "^16.0.0",
+    "use-image": "^1.1.1",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@types/uuid": "^10.0.0",
+    "autoprefixer": "^10.0.1",
+    "postcss": "^8",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5"
+  }
+}
